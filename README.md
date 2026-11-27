@@ -1,66 +1,95 @@
-# Rokid 智能眼镜小说阅读器
+# Rokid Glasses Reader
 
-Rokid 智能眼镜的本地小说阅读器。纯 Android 应用，无后端，书籍通过局域网从电脑浏览器上传。
+A local book reader for Rokid AI glasses. It is a plain Android app with no backend and no phone companion: books are uploaded from a computer's browser over the local network, and everything else happens on the glasses.
 
-针对**单色衍射光波导屏**优化：全黑底白字，无彩色、无灰度，高亮只用白色描边。
+This is an English fork of [qhduan/rokid-reader](https://github.com/qhduan/rokid-reader). It translates the interface, wraps English text at word boundaries, and adds on-glasses font size and brightness control.
 
-## 功能
+The UI is built for the **monochrome waveguide display**: white on black only, no colour and no greys, with highlights drawn as white outlines.
 
-- 📚 本地书架管理（txt / epub / md）
-- 🌐 局域网网页传书（电脑浏览器拖拽上传 / 下载 / 删除）
-- 📖 翻页阅读，支持半页 / ¾页 / 整页翻页幅度
-- 🔤 三档字号（网页端切换）
-- 💾 自动保存阅读进度，重开续读
-- 🎡 眼镜滚轮 / 触摸板全操作，无需触屏
+## Features
 
-## 操作方式
+- Bookshelf of local books (txt / epub / md)
+- Browser-based book transfer over Wi-Fi (drag and drop upload, download, delete)
+- Six font sizes and seven brightness settings, adjustable on the glasses while reading
+- Half, three-quarter or full-page turns
+- Reading position saved automatically per book and kept when the font size changes
+- Everything is driven by the temple touchpad
 
-| 输入 | 书架页 | 阅读页 |
-|------|--------|--------|
-| 滚轮上滚 | 上移选中 | 上一页 |
-| 滚轮下滚 | 下移选中 | 下一页 |
-| 滚轮按压（ENTER） | 打开书 / 切换传书 | 下一页 |
-| BACK | 退出程序 | 回书架 |
+## Controls
 
-字号和翻页幅度在传书网页里改，实时同步到眼镜。
+The glasses pass only two gestures to an app, tap and swipe, so the reader is built around those. Long press is reserved by the system for the AI assistant, and double tap is the system Back gesture.
 
-## 使用
+| Gesture | Bookshelf | Reading |
+|---|---|---|
+| Swipe forward / back | Move the selection down / up | Next / previous page |
+| Tap | Open the book, or start / stop book transfer | Open the adjust box (see below) |
+| Double tap (Back) | Exit the app | Close the adjust box, or return to the bookshelf |
 
-1. 眼镜上打开 App，书架选中"局域网传书…"，按滚轮确认启动服务
-2. 屏幕显示地址（如 `http://192.168.1.100:8000`），电脑浏览器打开
-3. 拖拽 txt / epub / md 文件上传，或在网页里管理书架、改字号、改翻页幅度
-4. 眼镜上书架上出现新书，滚轮选中、按压打开
+### Font size and brightness
 
-单文件上限 30MB。
+While reading, a tap steps through three modes:
 
-## 构建
+1. **First tap** shows `Font: …`. Swipe forward for larger, back for smaller.
+2. **Second tap** shows `Brightness: …`. Swipe forward for brighter, back for dimmer.
+3. **Third tap** closes the box and swipes turn pages again. It also closes by itself after five seconds, or on a double tap.
+
+| Setting | Steps |
+|---|---|
+| Font size | Micro (10 px), Tiny (12), X-Small (18), Small (22), Medium (26), Large (31) |
+| Brightness | Night, Dim, Low, Medium, High, Max, System |
+
+Brightness applies only while the reader is open. `System` follows the glasses' own brightness setting. Both settings are remembered between sessions.
+
+## Adding books
+
+The glasses need to be on the same Wi-Fi network as your computer.
+
+1. On the bookshelf, select **Wi-Fi book transfer…** and tap.
+2. The glasses show an address such as `http://192.168.1.100:8000`. Open it in a browser on your computer.
+3. Drag txt / epub / md files onto the page. They appear on the bookshelf straight away.
+
+The same page lists your books with download and delete buttons, and lets you set the font size and the page-turn step. Changes apply on the glasses immediately.
+
+The transfer server has no password, so anyone on the same network can reach it while it is running. Tap the bookshelf entry again (it reads **Stop transfer**) when you are done. Files are limited to 30 MB each.
+
+## Formats
+
+| Format | Notes |
+|---|---|
+| `.txt` | UTF-8, falling back to GBK |
+| `.epub` | Chapters read in spine order; chapter titles shown in bold |
+| `.md` | Markdown markup stripped, shown as plain text |
+
+mobi and PDF are not supported. [Calibre](https://calibre-ebook.com/) can convert most formats to epub.
+
+## Build and install
+
+Requires JDK 17 and the Android SDK (the build targets API 36; minimum is Android 9 / API 28).
 
 ```bash
-export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
-
-./gradlew assembleDebug      # debug APK
-./gradlew assembleRelease    # 签名 release APK（需 rokid-reader.keystore）
-
+./gradlew assembleDebug
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
-release 与 debug 签名不同，覆盖安装前先 `adb uninstall com.risenav.rokid.reader`。
+Installing on the glasses needs developer mode / ADB debugging switched on in the Hi Rokid phone app.
 
-## 技术要点
+`./gradlew assembleRelease` expects a `rokid-reader.keystore` in the repository root, which is not checked in. A release build and a debug build are signed differently, so uninstall one before installing the other:
 
-- **零依赖**：HTTP 服务器、EPUB 解析（zip + OPF + XHTML 剥标签）全部手写，不引第三方库
-- **全 Canvas 自绘**：无 XML 布局，书架和阅读页都是自定义 View
-- **行偏移分页**：全文折行 + 起始行索引定位，支持任意翻页幅度；进度按 0~1 比例持久化（行号随字号变化，比例不变）
-- **眼镜输入适配**：滚轮的 NOTIFICATION/RIGHT/LEFT 前导噪声过滤，按压的触摸+按键双通道去重
+```bash
+adb uninstall com.risenav.rokid.reader
+```
 
-详细架构和踩坑记录见 [CLAUDE.md](CLAUDE.md)。
+The debug build logs every key, scroll and touch event under the `RokidInput` tag, which is the quickest way to see what a gesture sends:
 
-## 格式支持
+```bash
+adb logcat -s RokidInput
+```
 
-| 格式 | 说明 |
-|------|------|
-| `.txt` | UTF-8 / GBK 编码自动探测 |
-| `.epub` | OPF spine 顺序解析，章节标题加粗显示 |
-| `.md` | 剥 Markdown 标记后按纯文本显示 |
+## Implementation notes
 
-mobi 不支持（二进制私有格式，建议用 [Calibre](https://calibre-ebook.com/) 转 epub 后上传）。
+- **No third-party libraries:** the HTTP server and the EPUB parser (zip + OPF + tag stripping) are hand-written.
+- **Canvas-drawn UI:** no XML layouts; the bookshelf and the reading page are custom views.
+- **Line-offset paging:** the whole book is wrapped into lines and the position is a starting line, which allows partial page turns. Progress is stored as a 0–1 ratio, and a re-wrap keeps the same text at the top of the page.
+- **Input filtering:** one swipe arrives as several key events (`NOTIFICATION`, `LEFT`/`RIGHT`, then `UP`/`DOWN`); only the last pair is acted on.
+
+[CLAUDE.md](CLAUDE.md) has the original author's architecture notes (in Chinese; its description of the controls predates this fork).
