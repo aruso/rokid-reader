@@ -79,6 +79,40 @@ class ReaderView(context: Context) : View(context) {
         }
     }
 
+    /** Move the font size one step smaller (dir < 0) or larger (dir > 0), clamped at the
+     *  ends, and re-wrap in place. Reading position is kept by Book.paginate's anchor. */
+    fun stepFontSize(dir: Int) {
+        if (!::settings.isInitialized || book == null) return
+        val next = (settings.fontSizeIndex + dir).coerceIn(0, SettingsStore.FONT_SIZES.size - 1)
+        if (next == settings.fontSizeIndex) return
+        settings.fontSizeIndex = next
+        applySettings()
+        notifyProgress()
+    }
+
+    /** Adjust-mode label drawn over the top of the page; null hides it. */
+    var overlay: String? = null
+        set(value) { field = value; invalidate() }
+
+    private val overlayTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.WHITE; textSize = 26f; textAlign = Paint.Align.CENTER
+    }
+    private val overlayHintPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.WHITE; textSize = 15f; textAlign = Paint.Align.CENTER
+    }
+    private val overlayFillPaint = Paint().apply { color = Color.BLACK }
+    private val overlayStrokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.WHITE; style = Paint.Style.STROKE; strokeWidth = 2f
+    }
+
+    private fun drawOverlay(canvas: Canvas, text: String) {
+        val box = RectF(60f, 40f, width - 60f, 130f)
+        canvas.drawRoundRect(box, 14f, 14f, overlayFillPaint)
+        canvas.drawRoundRect(box, 14f, 14f, overlayStrokePaint)
+        canvas.drawText(text, width / 2f, 78f, overlayTextPaint)
+        canvas.drawText("swipe to change  ·  tap for next", width / 2f, 110f, overlayHintPaint)
+    }
+
     /** 翻页或字号变化后重新折行。
      *  只在尺寸有效时执行；无效时静默跳过（onSizeChanged 会在 measure 后补上）。 */
     fun repaginate() {
@@ -129,11 +163,11 @@ class ReaderView(context: Context) : View(context) {
         canvas.drawColor(Color.BLACK)
 
         val b = book ?: run {
-            drawCenteredText(canvas, "暂无书籍，请先从书库打开")
+            drawCenteredText(canvas, "No book open - pick one from the bookshelf")
             return
         }
         if (b.lineCount == 0) {
-            drawCenteredText(canvas, "加载中…")
+            drawCenteredText(canvas, "Loading…")
             return
         }
 
@@ -159,6 +193,8 @@ class ReaderView(context: Context) : View(context) {
             RectF(paddingX, barTop, paddingX + (w - paddingX * 2) * b.progressRatio, barTop + progressBarHeight),
             progressFgPaint
         )
+
+        overlay?.let { drawOverlay(canvas, it) }
     }
 
     private fun drawCenteredText(canvas: Canvas, text: String) {

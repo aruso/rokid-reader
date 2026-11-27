@@ -156,6 +156,6 @@ object EpubParser {
         Regex("<h[12][^>]*>([^<]+)</h[12]>").find(html)?.let {
             return it.groupValues[1].trim()
         }
-        return "第 ${index + 1} 章"
+        return "Chapter ${index + 1}"
     }
 }

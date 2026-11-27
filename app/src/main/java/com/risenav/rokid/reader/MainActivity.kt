@@ -57,6 +57,7 @@ class MainActivity : AppCompatActivity() {
             ViewGroup.LayoutParams.MATCH_PARENT
         )
         readerView.initSettings(settingsStore)
+        applyBrightness()
         readerView.onProgressChanged = { ratio ->
             currentBook?.let { libraryStore.saveProgress(it.uri.toString(), ratio) }
         }
@@ -111,7 +112,7 @@ class MainActivity : AppCompatActivity() {
     private fun openBookFromUri(uri: Uri, title: String) {
         val book = Book(uri, title, this)
         if (!book.load()) {
-            Toast.makeText(this, "无法打开文件（不存在或超过 30MB）", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Cannot open file (missing or over 30MB)", Toast.LENGTH_SHORT).show()
             showLibrary()
             return
         }
@@ -148,9 +149,9 @@ class MainActivity : AppCompatActivity() {
                 serverAddress = server.localAddress()
                 invalidate()
             }
-            Toast.makeText(this, "书库管理服务已启动", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Book transfer server started", Toast.LENGTH_SHORT).show()
         } catch (e: Exception) {
-            Toast.makeText(this, "启动失败：${e.message}", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "Failed to start: ${e.message}", Toast.LENGTH_LONG).show()
         }
     }
 
@@ -173,6 +174,8 @@ class MainActivity : AppCompatActivity() {
 
     // ---------- 输入处理 ----------
 
+    private companion object { const val ADJUST_TIMEOUT_MS = 5000L }
+
     private fun logEvent(tag: String, msg: String) {
         if (BuildConfig.DEBUG) {
             android.util.Log.d("RokidInput", "[$tag] $msg")
@@ -188,7 +191,7 @@ class MainActivity : AppCompatActivity() {
                 val dir = if (v > 0) 1 else -1
                 if (isLibraryVisible) {
                     if (dir > 0) libraryView?.moveDown() else libraryView?.moveUp()
-                } else {
+                } else if (!adjust(dir)) {
                     readerView.scroll(dir)
                 }
                 return true
@@ -225,6 +228,8 @@ class MainActivity : AppCompatActivity() {
 
         if (!isNavKey) return super.dispatchKeyEvent(event)
 
+        if (isConfirmKey(keyCode) && !isLibraryVisible) return onReaderConfirmKey(event)
+
         if (event.action == KeyEvent.ACTION_DOWN) {
             if (event.repeatCount > 0) return true
             return onNavKeyDown(keyCode)
@@ -232,14 +237,97 @@ class MainActivity : AppCompatActivity() {
         return true
     }
 
+    private fun isConfirmKey(keyCode: Int) = keyCode == KeyEvent.KEYCODE_ENTER ||
+            keyCode == KeyEvent.KEYCODE_DPAD_CENTER ||
+            keyCode == KeyEvent.KEYCODE_SPACE ||
+            keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER
+
+    /** True only when this press started in the reader (not the tap that opened the book). */
+    private var confirmArmed = false
+
+    /**
+     * What a swipe does while reading. The glasses only give an app two gestures: tap and
+     * swipe (long press = AI assistant, double tap = system Back). So a tap steps through
+     * READ -> FONT -> BRIGHTNESS -> READ and, outside READ, swipes adjust the value instead
+     * of turning pages. Adjust modes drop back to READ after ADJUST_TIMEOUT_MS idle or on Back.
+     */
+    private enum class Mode { READ, FONT, BRIGHTNESS }
+    private var mode = Mode.READ
+    private val modeHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val exitAdjust = Runnable { setMode(Mode.READ) }
+
+    private fun onReaderConfirmKey(event: KeyEvent): Boolean {
+        if (event.action == KeyEvent.ACTION_DOWN) {
+            if (event.repeatCount == 0) confirmArmed = true
+        } else if (event.action == KeyEvent.ACTION_UP && confirmArmed) {
+            confirmArmed = false
+            setMode(when (mode) {
+                Mode.READ -> Mode.FONT
+                Mode.FONT -> Mode.BRIGHTNESS
+                Mode.BRIGHTNESS -> Mode.READ
+            })
+        }
+        return true
+    }
+
+    private fun setMode(m: Mode) {
+        mode = m
+        modeHandler.removeCallbacks(exitAdjust)
+        if (m != Mode.READ) modeHandler.postDelayed(exitAdjust, ADJUST_TIMEOUT_MS)
+        refreshOverlay()
+    }
+
+    private fun refreshOverlay() {
+        readerView.overlay = when (mode) {
+            Mode.READ -> null
+            Mode.FONT -> "Font: " + SettingsStore.FONT_LABELS[settingsStore.fontSizeIndex]
+            Mode.BRIGHTNESS -> "Brightness: " + brightnessLabel()
+        }
+    }
+
+    /** Swipe while reading. dir > 0 is the "next page" direction. Returns true if handled here. */
+    private fun adjust(dir: Int): Boolean {
+        when (mode) {
+            Mode.READ -> return false
+            Mode.FONT -> readerView.stepFontSize(dir)
+            Mode.BRIGHTNESS -> stepBrightness(dir)
+        }
+        setMode(mode)   // restart the idle timer and redraw the label
+        return true
+    }
+
+    // Brightness steps run Night .. Max, with "System" (follow the glasses' own setting,
+    // stored as index -1) as one more step past Max.
+    private fun brightnessLabel(): String {
+        val i = settingsStore.brightnessIndex
+        return if (i < 0) "System" else SettingsStore.BRIGHTNESS_LABELS[i]
+    }
+
+    private fun stepBrightness(dir: Int) {
+        val n = SettingsStore.BRIGHTNESS_LEVELS.size
+        val cur = settingsStore.brightnessIndex.let { if (it < 0) n else it }
+        val next = (cur + dir).coerceIn(0, n)
+        settingsStore.brightnessIndex = if (next == n) -1 else next
+        applyBrightness()
+    }
+
+    /** Per-window override: applies while this app is in front, leaves the system setting alone. */
+    private fun applyBrightness() {
+        val i = settingsStore.brightnessIndex
+        val lp = window.attributes
+        lp.screenBrightness = if (i < 0) WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+                              else SettingsStore.BRIGHTNESS_LEVELS[i]
+        window.attributes = lp
+    }
+
     private fun onNavKeyDown(keyCode: Int): Boolean {
         return when (keyCode) {
             KeyEvent.KEYCODE_DPAD_UP -> {
-                if (isLibraryVisible) libraryView?.moveUp() else readerView.prevPage()
+                if (isLibraryVisible) libraryView?.moveUp() else if (!adjust(-1)) readerView.prevPage()
                 true
             }
             KeyEvent.KEYCODE_DPAD_DOWN -> {
-                if (isLibraryVisible) libraryView?.moveDown() else readerView.nextPage()
+                if (isLibraryVisible) libraryView?.moveDown() else if (!adjust(1)) readerView.nextPage()
                 true
             }
             KeyEvent.KEYCODE_DPAD_LEFT,
@@ -259,13 +347,16 @@ class MainActivity : AppCompatActivity() {
     private fun handleConfirmKey() {
         if (isLibraryVisible) {
             libraryView?.confirm()
-        } else {
-            readerView.nextPage()
         }
+        // In the reader, confirm keys are handled by onReaderConfirmKey (tap = step through adjust modes).
     }
 
     /** BACK 键（滚轮按压映射）：阅读时回书架，书架页退出程序 */
     private fun onBackKey() {
+        if (mode != Mode.READ) {   // Back (double tap) first leaves the adjust mode
+            setMode(Mode.READ)
+            return
+        }
         if (isLibraryVisible) {
             finish()
         } else {

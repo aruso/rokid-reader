@@ -147,7 +147,7 @@ class LibraryView(
         if (w <= 0 || h <= 0) return
         canvas.drawRect(0f, 0f, w, h, bgPaint)
 
-        canvas.drawText("书架", paddingX, 88f, titlePaint)
+        canvas.drawText("Bookshelf", paddingX, 88f, titlePaint)
 
         var y = listStartY
         val range = visibleRange()
@@ -166,18 +166,18 @@ class LibraryView(
                 is Item.BookItem -> {
                     canvas.drawText(ellipsize(item.entry.title, paint, w - paddingX * 2), paddingX, y, paint)
                     val sub = when {
-                        item.entry.progress <= 0f -> "未读"
-                        item.entry.progress < 0.01f -> "已读 <1%"
-                        else -> "已读 ${(item.entry.progress * 100).toInt()}%"
+                        item.entry.progress <= 0f -> "Unread"
+                        item.entry.progress < 0.01f -> "Read <1%"
+                        else -> "Read ${(item.entry.progress * 100).toInt()}%"
                     }
                     canvas.drawText(sub, paddingX, y + 40f, subPaint)
                 }
                 Item.ServerToggle -> {
-                    val label = if (serverRunning) "⏹ 停止传书" else "⇪ 局域网传书…"
+                    val label = if (serverRunning) "⏹ Stop transfer" else "⇪ Wi-Fi book transfer…"
                     canvas.drawText(label, paddingX, y, paint)
                     if (serverRunning) {
                         // 地址独立一行，完整显示不截断
-                        canvas.drawText("电脑浏览器打开:", paddingX, y + 32f, subPaint)
+                        canvas.drawText("Open in your browser:", paddingX, y + 32f, subPaint)
                         canvas.drawText(serverAddress, paddingX, y + 64f, addrPaint)
                     }
                 }
@@ -227,7 +227,7 @@ class LibraryView(
     }
 
     /** 按 Y 坐标查找点中的项（遍历累加实际行高）。
-     *  从 listStartY 起算（而不是 listStartY - 58f），避免把"书架"标题区域
+     *  从 listStartY 起算（而不是 listStartY - 58f），避免把"Bookshelf"标题区域
      *  误判为第一项——标题画在 y=88，原起点 74 会把它算进 item 0 的命中区。 */
     private fun hitTest(y: Float): Int {
         if (y < listStartY) return -1

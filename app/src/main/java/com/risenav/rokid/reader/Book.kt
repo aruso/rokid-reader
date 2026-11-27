@@ -131,24 +131,51 @@ class Book(
             return
         }
         val oldRatio = progressRatio
+        // Re-wrap anchor: the text offset of the current top line, so a font-size change
+        // keeps the same words at the top instead of drifting via the rounded ratio.
+        // It is fixed at the last page turn (not recomputed per re-wrap), so cycling through
+        // all sizes returns to exactly the same page.
+        val anchor = if (pendingRatio == null) anchorOffset else null
 
         val newLines = mutableListOf<String>()
+        val newStarts = ArrayList<Int>()
+        var offset = 0   // characters consumed so far across all paragraphs
         for (para in paragraphs) {
             var rest = para
             while (rest.isNotEmpty()) {
-                val n = paint.breakText(rest, true, usableWidth, null)
-                newLines.add(rest.substring(0, n))
-                rest = rest.substring(n)
+                newStarts.add(offset)
+                var n = paint.breakText(rest, true, usableWidth, null)
+                // Word wrap for space-separated scripts: if the break lands inside a word,
+                // back up to the last space. CJK text (no spaces) keeps per-character breaks.
+                if (n in 1 until rest.length && rest[n].code < 0x2E80 && !rest[n].isWhitespace() &&
+                    rest[n - 1].code < 0x2E80 && !rest[n - 1].isWhitespace()) {
+                    val sp = rest.lastIndexOf(' ', n - 1)
+                    if (sp > 0) n = sp + 1
+                }
+                newLines.add(rest.substring(0, n).trimEnd())
+                val next = rest.substring(n).trimStart(' ')
+                offset += rest.length - next.length
+                rest = next
             }
+            newStarts.add(offset)
             newLines.add("")   // 段落间距
         }
         lines = newLines
+        lineStarts = newStarts
         linesPerPage = maxOf(1, usableHeight / lineHeight)
         // 重新折行后恢复阅读位置：优先用外部暂存的进度（load 后首次 paginate），
         // 否则用折行前的旧位置比例（翻页/字号变化时的内部 repaginate）
-        val restore = pendingRatio ?: oldRatio
-        pendingRatio = null
-        seekToRatio(restore)
+        if (anchor != null) {
+            // last line starting at or before the anchor (lineStarts is non-decreasing)
+            var idx = newStarts.binarySearch(anchor).let { if (it >= 0) it else -it - 2 }
+            // a paragraph-gap line shares its offset with the line after it; prefer the text line
+            while (idx + 1 < newStarts.size && newStarts[idx + 1] == anchor) idx++
+            position = idx.coerceIn(0, maxOf(0, lineCount - linesPerPage))
+        } else {
+            val restore = pendingRatio ?: oldRatio
+            pendingRatio = null
+            seekToRatio(restore)
+        }
     }
 
     /**
@@ -161,6 +188,7 @@ class Book(
     fun scrollBy(delta: Int): Boolean {
         val old = position
         position = (position + delta).coerceIn(0, maxOf(0, lineCount - linesPerPage))
+        if (position != old) anchorOffset = lineStarts.getOrNull(position)
         return position != old
     }
 
@@ -170,6 +198,12 @@ class Book(
         val end = minOf(position + linesPerPage, lines.size)
         return lines.subList(position.coerceIn(0, lines.size - 1), end)
     }
+
+    /** Text offset at which each wrapped line starts (parallel to [lines]). */
+    private var lineStarts: List<Int> = emptyList()
+
+    /** Text offset of the top line as of the last page turn / seek; null before first layout. */
+    private var anchorOffset: Int? = null
 
     /** 待恢复的进度（折行前暂存，paginate 完成后恢复） */
     private var pendingRatio: Float? = null
@@ -186,6 +220,7 @@ class Book(
         }
         val maxPos = maxOf(0, lineCount - linesPerPage)
         position = (ratio * maxPos).toInt().coerceIn(0, maxPos)
+        anchorOffset = lineStarts.getOrNull(position)
         pendingRatio = null
     }
 }

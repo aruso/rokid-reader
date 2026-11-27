@@ -73,9 +73,9 @@ class TransferServer(
                     }
                 }
             }
-            "http://<未知IP>:$port"
+            "http://<unknown IP>:$port"
         } catch (e: Exception) {
-            "http://<未知IP>:$port"
+            "http://<unknown IP>:$port"
         }
     }
 
@@ -357,11 +357,11 @@ class TransferServer(
 
     private fun managePage(): String = """
 <!DOCTYPE html>
-<html lang="zh">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>眼镜书库管理</title>
+<title>Glasses Library</title>
 <style>
   * { box-sizing: border-box; }
   body { font-family: sans-serif; background:#111; color:#eee; max-width:640px;
@@ -386,7 +386,7 @@ class TransferServer(
   .book button.del:hover { border-color:#f66; color:#f66; }
   .opt { display:flex; align-items:center; padding:10px 0; }
   .opt label { width:100px; color:#aaa; font-size:15px; }
-  .opt .btns { display:flex; gap:8px; }
+  .opt .btns { display:flex; flex-wrap:wrap; gap:8px; }
   .opt .btns button { background:#2c2c2e; border:none; color:#ccc;
                       border-radius:8px; padding:8px 16px; font-size:14px; cursor:pointer; }
   .opt .btns button.on { background:#4af; color:#fff; }
@@ -395,33 +395,36 @@ class TransferServer(
 </style>
 </head>
 <body>
-  <h1>📖 眼镜书库管理</h1>
+  <h1>📖 Glasses Library</h1>
 
   <div class="card">
-    <div class="drop" id="drop">拖拽 txt / epub / md 到这里上传，或点击选择文件</div>
+    <div class="drop" id="drop">Drag txt / epub / md files here to upload, or click to choose files</div>
     <input type="file" id="file" accept=".txt,.epub,.md,.markdown,text/plain,application/epub+zip" multiple style="display:none">
     <div class="status" id="status"></div>
   </div>
 
-  <h2>书架（<span id="count">0</span> 本）</h2>
-  <div class="card" id="books"><div class="empty">加载中…</div></div>
+  <h2>Bookshelf (<span id="count">0</span> books)</h2>
+  <div class="card" id="books"><div class="empty">Loading…</div></div>
 
-  <h2>阅读设置</h2>
+  <h2>Reading settings</h2>
   <div class="card">
     <div class="opt">
-      <label>字体大小</label>
+      <label>Font size</label>
       <div class="btns" id="fontBtns">
-        <button data-v="0">小</button>
-        <button data-v="1">中</button>
-        <button data-v="2">大</button>
+        <button data-v="0">Micro</button>
+        <button data-v="1">Tiny</button>
+        <button data-v="2">X-Small</button>
+        <button data-v="3">Small</button>
+        <button data-v="4">Medium</button>
+        <button data-v="5">Large</button>
       </div>
     </div>
     <div class="opt">
-      <label>翻页幅度</label>
+      <label>Page turn step</label>
       <div class="btns" id="ratioBtns">
-        <button data-v="0">半页</button>
-        <button data-v="1">¾页</button>
-        <button data-v="2">整页</button>
+        <button data-v="0">Half page</button>
+        <button data-v="1">¾ page</button>
+        <button data-v="2">Full page</button>
       </div>
     </div>
   </div>
@@ -435,22 +438,22 @@ async function loadBooks() {
   const books = await r.json();
   ${'$'}('count').textContent = books.length;
   const el = ${'$'}('books');
-  if (!books.length) { el.innerHTML = '<div class="empty">书架为空，先上传几本吧</div>'; return; }
+  if (!books.length) { el.innerHTML = '<div class="empty">Bookshelf is empty - upload some books</div>'; return; }
   el.innerHTML = books.map(b => `
     <div class="book">
       <div class="info">
         <div class="title">${'$'}{esc(b.title)}</div>
-        <div class="meta">已读 ${'$'}{b.progress}%</div>
+        <div class="meta">Read ${'$'}{b.progress}%</div>
       </div>
-      <button onclick="dl('${'$'}{esc(b.file)}')">下载</button>
-      <button class="del" onclick="del('${'$'}{esc(b.file)}')">删除</button>
+      <button onclick="dl('${'$'}{esc(b.file)}')">Download</button>
+      <button class="del" onclick="del('${'$'}{esc(b.file)}')">Delete</button>
     </div>`).join('');
 }
 function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML;}
 
 function dl(f){ location.href = '/download/' + encodeURIComponent(f); }
 async function del(f){
-  if (!confirm('从眼镜删除「' + f + '」？')) return;
+  if (!confirm('Delete "' + f + '" from the glasses?')) return;
   await fetch('/delete/' + encodeURIComponent(f), {method:'POST'});
   loadBooks();
 }
@@ -461,11 +464,11 @@ async function upload(files) {
     const f = files[i];
     const fd = new FormData();
     fd.append('file', f, f.name);
-    status.textContent = '上传中 (' + (i+1) + '/' + files.length + '): ' + f.name;
+    status.textContent = 'Uploading (' + (i+1) + '/' + files.length + '): ' + f.name;
     try {
       await fetch('/upload', { method:'POST', body: fd });
-      status.textContent = '✓ 完成: ' + f.name;
-    } catch(e) { status.textContent = '✗ 失败: ' + f.name; }
+      status.textContent = '✓ Done: ' + f.name;
+    } catch(e) { status.textContent = '✗ Failed: ' + f.name; }
   }
   loadBooks();
 }
@@ -491,7 +494,7 @@ async function saveSettings() {
   const ratio = +${'$'}('ratioBtns').querySelector('.on').dataset.v;
   await fetch('/api/settings', { method:'POST',
     body: JSON.stringify({fontSizeIndex: font, scrollRatioIndex: ratio}) });
-  status.textContent = '✓ 设置已保存到眼镜';
+  status.textContent = '✓ Settings saved to glasses';
 }
 ${'$'}('fontBtns').onclick = e => { if(e.target.dataset.v){markOn('fontBtns',+e.target.dataset.v);saveSettings();} };
 ${'$'}('ratioBtns').onclick = e => { if(e.target.dataset.v){markOn('ratioBtns',+e.target.dataset.v);saveSettings();} };
