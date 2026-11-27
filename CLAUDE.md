@@ -2,101 +2,135 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## 项目概述
+## Project overview
 
-Rokid 智能眼镜的本地小说阅读器。纯 Android (Kotlin, minSdk 28)，无后端，书籍通过局域网 HTTP 服务器从电脑上传。目标设备是**单色衍射光波导屏**——所有 UI 都是黑底白字，无彩色、无灰色填充。
+A local book reader for Rokid AI glasses. Plain Android (Kotlin, minSdk 28), no backend; books are uploaded from a computer through a LAN HTTP server the app runs itself. The target device has a **monochrome diffractive waveguide display**, so all UI is white on black with no colour and no grey fills.
 
-## 构建与安装
+This is an English fork of qhduan/rokid-reader. All user-facing strings are English; many code comments are still the original Chinese.
+
+## Build and install
 
 ```bash
-# 需要 Android Studio 的 JBR（系统无独立 JDK）
-export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
-
+# Needs JDK 17 and the Android SDK (compileSdk 36)
 ./gradlew assembleDebug      # debug APK
-./gradlew assembleRelease    # 签名 release APK（需 rokid-reader.keystore，被 .gitignore 忽略）
+./gradlew assembleRelease    # signed release APK (needs rokid-reader.keystore, which is git-ignored)
 
 adb install -r app/build/outputs/apk/debug/app-debug.apk
-# release 与 debug 签名不同，覆盖安装前先 adb uninstall com.risenav.rokid.reader
+# release and debug are signed differently: adb uninstall com.risenav.rokid.reader before switching
 ```
 
-无测试、无 lint（`lint.checkReleaseBuilds=false`，因为 lint 工具需联网下载，被本机代理挡住）。
+There are no tests and no lint (`lint.checkReleaseBuilds=false`, because the original author's machine could not download the lint tooling).
 
-`app/build.gradle.kts` 里显式开了 `buildFeatures.buildConfig = true`（AGP 8 默认关闭），`MainActivity.logEvent` 用 `BuildConfig.DEBUG` 门控日志。
+`app/build.gradle.kts` explicitly sets `buildFeatures.buildConfig = true` (off by default in AGP 8); `MainActivity.logEvent` gates its logging on `BuildConfig.DEBUG`.
 
-## 关键架构
+On the glasses, `adb install` only works with developer mode / ADB debugging enabled in the Hi Rokid phone app. Rokid's adbd also rejects many direct shell commands (`pm`, `wm`, `dumpsys`, `logcat`...) with `error: closed`; wrap them as `adb shell sh -c '...'`.
 
-### 渲染：全 Canvas 自绘，无 XML 布局
+## Key architecture
 
-所有界面（书架 `LibraryView`、阅读页 `ReaderView`）都是自定义 `View` + `Canvas` 绘制。字体大小、行高、边距都是像素硬编码——改字号/间距直接改对应 View 里的 `textSize`、`rowHeight`、`paddingX` 常量。
+### Rendering: all Canvas, no XML layouts
 
-### 分页模型：行偏移，非页列表
+Every screen (bookshelf `LibraryView`, reading page `ReaderView`) is a custom `View` drawn on a `Canvas`. Font sizes, row heights and margins are hard-coded in pixels: to change them, edit the `textSize`, `rowHeight` and `paddingX` constants in the relevant view.
 
-`Book` 不维护"页"的列表，而是：全文折成 `lines: List<String>`，阅读位置 = `position`（起始行索引）。翻页 = `position += 每页行数 × 翻页幅度`。这支持半页/¾页翻页（有内容重叠）。字号变化时重新折行，用 `progressRatio`（0~1 浮点）恢复位置——**持久化只存 ratio，不存行号**（因为行号随字号变化）。
+### Paging model: line offset, not a list of pages
 
-**关键坑**：`Book.load()` 只填 `paragraphs`，折行要等 `ReaderView` 第一次 `paginate()`（需 View measure 完有尺寸）。折行前调 `seekToRatio` 会算出 `maxPos = 0`、把 position 重置为 0——所以 `Book` 里用 `pendingRatio` 暂存待恢复的进度，首次 `paginate()` 完成后才消费。`ReaderView.book` setter 必须主动调 `repaginate()`（不能只靠 `onSizeChanged`——书架打开书时 View 尺寸不变，`onSizeChanged` 不触发）。
+`Book` does not keep a list of pages. The whole text is wrapped into `lines: List<String>` and the reading position is `position`, the index of the first visible line. A page turn is `position += lines per page × page-turn step`, which is what allows half and three-quarter page turns (with overlap).
 
-`scrollBy` 的上限是 `lineCount - linesPerPage`（不是 `lineCount - 1`）——保证最后一页总是满页，不会滚到只剩 1 行的"死页"。
+**Wrapping** (`Book.paginate`): `Paint.breakText` finds how many characters fit; for space-separated scripts the break then backs up to the last space so words are not split. CJK text (code points ≥ 0x2E80) keeps per-character breaks. Leading spaces on a wrapped line are dropped.
 
-单文件大小上限 30MB（`Book.maxFileBytes`），超限拒绝加载——txt/epub 全量读入内存，更大会 OOM。
+**Position across re-wraps:** line numbers change with the font size, so two mechanisms keep the place:
 
-### 输入：眼镜滚轮的事件映射
+- *Persisted progress* is a `progressRatio` float (0–1), never a line number.
+- *Live font changes* use a text anchor. `lineStarts` holds the text offset at which each wrapped line begins, and `anchorOffset` is the offset of the top line as of the last page turn or seek. `paginate()` puts the line containing `anchorOffset` at the top. The anchor is deliberately **not** recomputed after each re-wrap; otherwise every font change would snap back to a line start and a round trip through the sizes would drift upward by a line.
 
-Rokid 眼镜滚轮滚一下 = 系统发 `NOTIFICATION` + `RIGHT/LEFT` + `DOWN/UP` 四个键；滚轮按压**同时**发触摸事件（`ACTION_DOWN/UP`）和按键事件（`KEYCODE_ENTER` 或 `KEYCODE_BACK`，取决于固件）。`MainActivity.dispatchKeyEvent` 里：
-- `NOTIFICATION`、`RIGHT/LEFT` 直接消费不响应（前导噪声）
-- 只用 `UP/DOWN` 驱动导航（避免一次滚动触发两次移动）
-- `BACK` 键 = 阅读时回书架，书架页退出程序
-- `ENTER` 键 = 书架打开书/切换传书，阅读时**下一页**（与滚轮下滚一致）
+**Key pitfall:** `Book.load()` only fills `paragraphs`; wrapping waits for the first `paginate()` from `ReaderView` (which needs a measured view). Calling `seekToRatio` before wrapping would compute `maxPos = 0` and reset the position to 0, so `Book` parks the ratio in `pendingRatio` and consumes it after the first `paginate()`. When `pendingRatio` is set, `paginate()` uses the ratio and ignores the anchor. The `ReaderView.book` setter must call `repaginate()` itself; it cannot rely on `onSizeChanged`, because the view size does not change when a book is opened from the bookshelf.
 
-**按压同时发触摸和按键，两个通道只能绑一个动作**——阅读页触摸翻页已删（`MainActivity.onTouchEvent` 直接 `super`），否则一次按压翻两页。书架页触摸点选由 `LibraryView.onTouchEvent` 处理，有 24px 的 touchSlop 容差区分点选/滑动。
+The upper bound in `scrollBy` is `lineCount - linesPerPage` (not `lineCount - 1`), so the last page is always full and you cannot scroll to a "dead page" with one line left.
 
-触摸板滚轮发的是 `MotionEvent.ACTION_SCROLL`（AXIS_VSCROLL），在 `dispatchGenericMotionEvent` 拦截（WebView/子 View 会抢 `onGenericMotionEvent`，必须在 dispatch 层拦）。
+Files are limited to 30 MB (`Book.maxFileBytes`); txt and epub are read fully into memory and larger files would run out of memory. Re-wrapping a whole novel takes one to two seconds on the glasses and runs on the main thread.
 
-调试输入映射：`adb logcat -d | grep RokidInput` 会打出所有按键/滚轮/触摸事件（仅 debug 包，release 被 `BuildConfig.DEBUG` 关掉）。
+### Input: what the glasses actually deliver
 
-### 局域网服务器：手写零依赖 HTTP
+The temple touchpad gives an app only **tap** and **swipe**:
 
-`TransferServer` 是手写极简 HTTP 服务器（不引 NanoHTTPD——gradle 拉依赖被代理挡，且只需两个端点）。**关键坑**：请求解析必须全程用原始字节流按 `\r\n\r\n` 切分 headers/body，绝不能用 `BufferedReader.readLine()`——它的内部缓冲区会吞掉部分 body 字节，导致按 `Content-Length` 读 body 时永远读不满、阻塞超时（浏览器报 `ERR_EMPTY_RESPONSE`）。
+- **Swipe** arrives as four keys: `NOTIFICATION`, then `RIGHT`/`LEFT`, then `DOWN`/`UP`.
+- **Tap** arrives as `NOTIFICATION` followed by `KEYCODE_ENTER`, plus touch events (`ACTION_DOWN/UP`).
+- **Double tap** is turned into `KEYCODE_BACK` by the system before the app sees it.
+- **Long press** starts the Rokid AI assistant. The app receives only the leading `NOTIFICATION`; the assistant overlay (`com.rokid.os.sprite.assistserver`) then takes input focus until dismissed.
 
-multipart 上传同样在**原始字节数组**上找 boundary（`indexOf(ByteArray, ByteArray)`），不能解码成 String 再 `indexOf`——boundary 字节序列可能恰好出现在二进制文件内容里（epub 是 zip），String 编解码会干扰匹配导致提前截断。
+Do not design features around long press or double tap; both were tried for brightness and neither can work.
 
-服务器还提供 `/api/books`、`/api/settings`、`/download/xx`、`/delete/xx` 端点，网页管理界面（书单/下载/删除/改字号/改翻页幅度）是内嵌在 `managePage()` 里的单文件 HTML。下载是流式 `inputStream().copyTo(output)`（不全量读内存）。请求体上限 200MB。
+In `MainActivity.dispatchKeyEvent`:
 
-上传重名文件用 `uniqueFile()` 去重时**保留原扩展名**（`name_1.epub` 不是 `name_1.txt`——后者会让 `Book.load()` 按扩展名路由走错解析器）。`title` 用 `substringBeforeLast('.')` 去扩展名（不能硬编码 `removeSuffix(".txt")`）。
+- `NOTIFICATION` and `RIGHT`/`LEFT` are consumed and ignored (leading noise).
+- Only `UP`/`DOWN` drive navigation, so one swipe never moves twice.
+- `BACK`: closes the adjust box if one is open; otherwise returns to the bookshelf from the reader, or exits from the bookshelf.
+- `ENTER` on the bookshelf opens the selected book or toggles book transfer (handled on key down).
+- `ENTER` in the reader steps the adjust mode (handled on key **up**, in `onReaderConfirmKey`). `confirmArmed` makes sure the press started in the reader, so the release of the tap that opened a book is not counted.
 
-### 格式解析：按扩展名路由
+**Adjust modes** (`MainActivity.Mode`): a tap steps `READ → FONT → BRIGHTNESS → READ`. Outside `READ`, a swipe calls `adjust(dir)` instead of turning the page: `ReaderView.stepFontSize(dir)` or `stepBrightness(dir)`, both clamped at the ends. The mode falls back to `READ` after `ADJUST_TIMEOUT_MS` (5 s) without input. `ReaderView.overlay` holds the label drawn at the top of the page (`Font: …` / `Brightness: …`); setting it to null hides it.
 
-`Book.load()` 按文件扩展名分发：
-- `.epub` → `EpubParser`（zip 解包 + OPF spine 顺序 + 正则剥 XHTML 标签，零依赖）
-- `.md` → 纯文本读取后剥 Markdown 标记
-- 其他 → 纯文本，编码探测（UTF-8 严格解码失败则回退 GBK）
+**A tap sends both a touch and a key, and only one channel may be bound to an action.** Touch handling on the reading page was removed (`MainActivity.onTouchEvent` just calls `super`); otherwise one tap would act twice. On the bookshelf, tap-to-select is handled by `LibraryView.onTouchEvent`, with a 24 px touch slop to tell taps from swipes.
 
-**EpubParser 的坑**：
-- zip 解压只读 `.opf`/`.html`/`.xhtml`/`.htm`/`.ncx`，跳过图片/字体/CSS（省内存）
-- OPF 的 `<item>`/`<itemref>` 标签可能跨行（属性间有换行），正则必须 `DOT_MATCHES_ALL` 先匹配整个标签再提取属性，不能 `<item[^>]*`（`[^>]*` 不匹配换行）
-- OPF `href` 可能含 `../`（OPF 在子目录引用上级文件），`$opfDir/$href` 直接拼会得到 `OEBPS/../text/ch1.xhtml`——要 `normalizePath()` 规范化
-- 空章节被跳过时章节标题序号要用 **spine 下标**（`spine.withIndex()`），不能用 `chapters.size`（会跳号）
-- XHTML 块级标签列表要含 `td`/`th`（否则表格单元格挤一行）
-- 章节标题作为独立段落插入，用 `「」` 包裹——`ReaderView.onDraw` 识别后加粗渲染
+Some input devices send `MotionEvent.ACTION_SCROLL` (`AXIS_VSCROLL`) instead of keys. That is intercepted in `dispatchGenericMotionEvent` (child views would otherwise grab `onGenericMotionEvent`) and goes through the same `adjust()` check as key swipes.
 
-### 设置与进度持久化
+Debugging input: `adb logcat -s RokidInput` prints every key, scroll and touch event (debug builds only; `BuildConfig.DEBUG` turns it off in release). When simulating input with `adb shell sh -c 'input keyevent ...'`, check `dumpsys window | grep mCurrentFocus` first: if the assistant overlay has focus, the keys never reach the app. The display also sleeps within seconds, and screenshots are black while it is asleep (`input keyevent KEYCODE_WAKEUP`).
 
-- `LibraryStore`: SharedPreferences + JSON，书架（uri/title）+ 每本书进度 ratio
-  - **进度 key 用完整 uri 字符串**（`progress:file:///...`），不用 `uri.hashCode()`——旧版本用 hashCode 有撞 hash 风险，`init` 块里的 `migrateProgressKeys()` 负责一次性迁移旧 key 并清理已删书的孤儿 key
-  - `BookEntry.progress` 不入 JSON（`saveBooks` 只存 uri/title），`loadBooks` 时现查 SharedPreferences
-- `SettingsStore`: SharedPreferences，字号档位索引 + 翻页幅度（0.5/0.75/1.0）
-  - `fontSizeIndex` 的 setter 和 getter 都要 `coerceIn`——网页可能传越界值
-- 网页改设置后服务器回调 `onLibraryChanged` → `ReaderView.applySettings()` 重新分页
+### Brightness
 
-### 书架 UI 的坑
+`SettingsStore.brightnessIndex` is an index into `BRIGHTNESS_LEVELS` (Night … Max), or `-1` for "System", meaning no override. `MainActivity.applyBrightness()` sets `window.attributes.screenBrightness`, a per-window override: it applies only while the reader is in front and leaves the system setting untouched. In the UI, "System" sits one step past Max. The panel's minimum backlight is about 0.035, which is why Night is 0.036.
 
-- `LibraryView.hitTest` 起点必须是 `listStartY`（不能是 `listStartY - 58f`）——"书架"标题画在 y=88，起点 74 会把标题区域误判为第一项，点标题就打开第一本书
-- `ellipsize` 用 `Paint.breakText` 一次算截断位置（O(n)），不能逐字 `dropLast + measureText`（O(n²) 且会切坏 UTF-16 代理对/emoji）
-- 传书服务器开关切换会改 `ServerToggle` 行高（76↔130），`serverRunning` setter 里要调 `ensureSelectedVisible()` 防止选中项被挤出可视窗口
+### LAN server: hand-written, zero-dependency HTTP
 
-## 修改时的注意事项
+`TransferServer` is a minimal hand-written HTTP server (no NanoHTTPD: the original author could not fetch dependencies, and only a few endpoints are needed). **Key pitfall:** request parsing must work on the raw byte stream and split headers from body at `\r\n\r\n`. Never use `BufferedReader.readLine()`: its internal buffer swallows part of the body, so reading the body by `Content-Length` never completes and blocks until timeout (the browser reports `ERR_EMPTY_RESPONSE`).
 
-- **类注释里别写 `*/`**：`TransferServer.kt` 类注释曾因写 `/download/*` 导致 `*/` 提前闭合注释块，整个文件编译失败。写端点文档时用 `xx` 代替 `*`。
-- **中文文件名**：multipart 的 `filename=` 字段，浏览器可能发 UTF-8 原始字节或百分号编码，`TransferServer.decodeFileName()` 两种都要兼容（先 URLDecoder，再 latin-1→UTF-8 重解码）。
-- **单色屏 UI**：新增 UI 元素用 `Color.BLACK` 背景 + `Color.WHITE` 文字，高亮只用白色描边（`Paint.Style.STROKE`），不要灰色填充——单色屏显示不出灰度层次。
-- keystore 密码硬编码在 `app/build.gradle.kts`（个人项目），仓库公开前应挪到环境变量。
-- **别引入外部 intent**：manifest 里没有 ACTION_VIEW intent-filter，所有书必须走书架（LAN 上传）。曾经支持文件管理器直接打开 txt，但 content:// uri 无法入书架、进度恢复路径不一致，已移除。
+Multipart uploads likewise find the boundary in the **raw byte array** (`indexOf(ByteArray, ByteArray)`), never by decoding to a String and calling `indexOf`: the boundary byte sequence can appear inside binary content (an epub is a zip), and string decoding corrupts the match and truncates the file.
+
+The server also provides `/api/books`, `/api/settings`, `/download/xx` and `/delete/xx`. The management page (book list, download, delete, font size, page-turn step) is a single HTML file embedded in `managePage()`. Downloads are streamed with `inputStream().copyTo(output)` rather than read into memory. The request body limit is 200 MB.
+
+The font-size buttons on the page are hard-coded (`data-v="0"` … `"5"`) and must be kept in step with `SettingsStore.FONT_SIZES` / `FONT_LABELS`. Brightness is not exposed on the page.
+
+When an upload has a duplicate name, `uniqueFile()` **keeps the original extension** (`name_1.epub`, not `name_1.txt`; the latter would send `Book.load()` to the wrong parser). `title` strips the extension with `substringBeforeLast('.')` (do not hard-code `removeSuffix(".txt")`).
+
+The server has no authentication and listens on port 8000 only while book transfer is switched on.
+
+### Format parsing: routed by extension
+
+`Book.load()` dispatches on the file extension:
+
+- `.epub` → `EpubParser` (unzip + OPF spine order + regex tag stripping, zero dependencies)
+- `.md` → read as plain text, then Markdown markup stripped
+- anything else → plain text with encoding detection (strict UTF-8, falling back to GBK)
+
+**EpubParser pitfalls:**
+
+- Only `.opf` / `.html` / `.xhtml` / `.htm` / `.ncx` entries are read from the zip; images, fonts and CSS are skipped to save memory.
+- OPF `<item>` / `<itemref>` tags can span lines (newlines between attributes). The regex must use `DOT_MATCHES_ALL` to match the whole tag and then extract attributes; `<item[^>]*` is not enough.
+- An OPF `href` can contain `../` (the OPF lives in a subdirectory and references a parent). Joining `$opfDir/$href` directly gives `OEBPS/../text/ch1.xhtml`, so it goes through `normalizePath()`.
+- When empty chapters are skipped, chapter numbering must use the **spine index** (`spine.withIndex()`), not `chapters.size`, or numbers are skipped. The fallback title is `Chapter N`.
+- The list of XHTML block-level tags must include `td` / `th`, or table cells run together on one line.
+- Chapter titles are inserted as their own paragraph wrapped in `「」`; `ReaderView.onDraw` recognises that and draws the line in bold.
+
+### Settings and progress persistence
+
+- `LibraryStore`: SharedPreferences + JSON; the bookshelf (uri / title) plus a progress ratio per book.
+  - **Progress keys use the full uri string** (`progress:file:///...`), not `uri.hashCode()`. Older versions used the hash and could collide; `migrateProgressKeys()` in the `init` block migrates old keys once and removes orphaned keys for deleted books.
+  - `BookEntry.progress` is not written to JSON (`saveBooks` stores only uri / title); `loadBooks` looks it up in SharedPreferences.
+- `SettingsStore`: SharedPreferences; font size index, page-turn step (0.5 / 0.75 / 1.0) and brightness index.
+  - `FONT_SIZES` is `10, 12, 18, 22, 26, 31` px, labelled Micro, Tiny, X-Small, Small, Medium, Large. The stored value is the index, and the default is 0, so a fresh install starts on Micro (10 px).
+  - Both the setter and the getter of `fontSizeIndex` must `coerceIn`; the web page can send out-of-range values, and the meaning of a stored index changes if sizes are added or removed.
+- After a settings change from the web page, the server calls `onLibraryChanged` → `ReaderView.applySettings()`, which re-wraps the text.
+
+### Bookshelf UI pitfalls
+
+- `LibraryView.hitTest` must start at `listStartY` (not `listStartY - 58f`). The "Bookshelf" title is drawn at y=88; starting at 74 treats the title area as the first row, so tapping the title opens the first book.
+- `ellipsize` computes the cut position once with `Paint.breakText` (O(n)). Do not loop `dropLast + measureText` (O(n²), and it can split UTF-16 surrogate pairs / emoji).
+- Toggling the transfer server changes the height of the `ServerToggle` row (76 ↔ 130); the `serverRunning` setter must call `ensureSelectedVisible()` so the selected row is not pushed out of view.
+
+## Things to watch when making changes
+
+- **Never write `*/` inside a class comment.** The class comment in `TransferServer.kt` once contained `/download/*`, whose `*/` closed the comment early and broke compilation of the whole file. Write `xx` in place of `*` when documenting endpoints.
+- **Non-ASCII file names:** the multipart `filename=` field may arrive as raw UTF-8 bytes or percent-encoded. `TransferServer.decodeFileName()` must handle both (URLDecoder first, then re-decode latin-1 → UTF-8).
+- **Monochrome UI:** new UI elements use a `Color.BLACK` background and `Color.WHITE` text, with highlights as white outlines only (`Paint.Style.STROKE`). No grey fills; the display cannot show grey levels.
+- **Status feedback while reading** goes through `ReaderView.overlay`, not Toasts. Toasts are still used for errors and the server-started message.
+- The keystore password is hard-coded in `app/build.gradle.kts` (a personal project of the original author); it should move to an environment variable.
+- **Do not add external intents.** The manifest has no ACTION_VIEW intent filter; every book must come through the bookshelf (LAN upload). Opening txt files directly from a file manager was once supported, but `content://` uris could not be added to the bookshelf and progress restore took a different path, so it was removed.

@@ -92,4 +92,4 @@ adb logcat -s RokidInput
 - **Line-offset paging:** the whole book is wrapped into lines and the position is a starting line, which allows partial page turns. Progress is stored as a 0–1 ratio, and a re-wrap keeps the same text at the top of the page.
 - **Input filtering:** one swipe arrives as several key events (`NOTIFICATION`, `LEFT`/`RIGHT`, then `UP`/`DOWN`); only the last pair is acted on.
 
-[CLAUDE.md](CLAUDE.md) has the original author's architecture notes (in Chinese; its description of the controls predates this fork).
+[CLAUDE.md](CLAUDE.md) has the detailed architecture notes and the pitfalls found along the way.
